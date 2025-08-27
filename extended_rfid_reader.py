@@ -23,10 +23,15 @@ try:
         id, text = reader.read()
         print("ID: %s\nText: %s" % (id, text))
         
-        # Store the RFID tag ID in the list
-        rfid_tags.append(str(id))
-        print(f"Tag ID {id} added to collection.")
-        print(f"Total tags collected: {len(rfid_tags)}")
+# Store the RFID tag ID in the list (only if unique)
+        tag_id_str = str(id)
+        if tag_id_str not in rfid_tags:
+            rfid_tags.append(tag_id_str)
+            print(f"Tag ID {id} added to collection.")
+        else:
+            print(f"Tag ID {id} already exists in collection - skipping duplicate.")
+        print(f"Total unique tags collected: {len(rfid_tags)}")
+        
         
 except KeyboardInterrupt:
     print("\nProgram interrupted by user.")
