@@ -4,7 +4,7 @@ import RPi.GPIO as GPIO
 from mfrc522 import SimpleMFRC522
 
 reader = SimpleMFRC522()
-rfid_tags = []  # List to store RFID tag IDs
+rfid_tags = {}  # Dictionary to store RFID tag IDs and text values
 
 try:
     print("RFID Tag Collection")
@@ -23,33 +23,32 @@ try:
         id, text = reader.read()
         print("ID: %s\nText: %s" % (id, text))
         
-# Store the RFID tag ID in the list (only if unique)
+        # Store the RFID tag ID and text in the dictionary (only if unique)
         tag_id_str = str(id)
         if tag_id_str not in rfid_tags:
-            rfid_tags.append(tag_id_str)
+            rfid_tags[tag_id_str] = text
             print(f"Tag ID {id} added to collection.")
         else:
             print(f"Tag ID {id} already exists in collection - skipping duplicate.")
         print(f"Total unique tags collected: {len(rfid_tags)}")
-        
         
 except KeyboardInterrupt:
     print("\nProgram interrupted by user.")
 finally:
     GPIO.cleanup()
     
-    # Write RFID tag IDs to text file on exit
+    # Write RFID tag IDs and text to file on exit
     if rfid_tags:
         filename = "rfid_tags.txt"
         try:
             with open(filename, 'w') as file:
-                for tag_id in rfid_tags:
-                    file.write(f"{tag_id}\n")
+                for tag_id, tag_text in rfid_tags.items():
+                    file.write(f"{tag_id}: {tag_text}\n")
             
             print(f"\nSuccessfully saved {len(rfid_tags)} RFID tag IDs to '{filename}'")
-            print("Saved tag IDs:")
-            for i, tag_id in enumerate(rfid_tags, 1):
-                print(f"  {i}: {tag_id}")
+            print("Saved tag data:")
+            for i, (tag_id, tag_text) in enumerate(rfid_tags.items(), 1):
+                print(f"  {i}: {tag_id} - {tag_text}")
                 
         except Exception as e:
             print(f"Error writing to file: {e}")
