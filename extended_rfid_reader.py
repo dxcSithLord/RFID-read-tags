@@ -1,10 +1,13 @@
 from time import sleep
 import sys
 import RPi.GPIO as GPIO
+from gpiozero import RGBLED
+from colorzero import Color
 from mfrc522 import SimpleMFRC522
 
 reader = SimpleMFRC522()
 rfid_tags = {}  # Dictionary to store RFID tag IDs and text values
+led = RGBLED(12,13,19)
 
 try:
     print("RFID Tag Collection")
@@ -20,6 +23,7 @@ try:
             break
         
         print("Hold a tag near the reader")
+        led.color = Color("white")
         id, text = reader.read()
         print("ID: %s\nText: %s" % (id, text))
         
@@ -28,10 +32,13 @@ try:
         if tag_id_str not in rfid_tags:
             rfid_tags[tag_id_str] = text
             print(f"Tag ID {id} added to collection.")
+            led.color = Color("green")
         else:
             print(f"Tag ID {id} already exists in collection - skipping duplicate.")
+            led.color = Color("yellow")
         print(f"Total unique tags collected: {len(rfid_tags)}")
-        
+
+    led.color = Color("lightblue")
 except KeyboardInterrupt:
     print("\nProgram interrupted by user.")
 finally:
