@@ -1,0 +1,37 @@
+[Unit]
+Description=RFID Reader Service
+Documentation=https://github.com/your-repo/rfid-reader
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/rfid-reader
+Environment=PYTHONPATH=/opt/rfid-reader
+ExecStart=/opt/rfid-reader/venv/bin/python3 /opt/rfid-reader/rfid_service.py
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/rfid-reader
+
+# Resource limits
+LimitNOFILE=1024
+LimitNPROC=512
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rfid-reader
+
+[Install]
+WantedBy=multi-user.target
