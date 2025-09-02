@@ -2,6 +2,7 @@ import logging
 import json
 import pika
 import os
+import ssl
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -89,7 +90,10 @@ class MessageTransmitter:
             # Configure SSL if requested
             ssl_options = None
             if self.use_ssl:
-                ssl_options = pika.SSLOptions(context=None)  # Use default SSL context
+                # Create a default SSL context
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False  # Disable hostname verification for development
+                ssl_options = pika.SSLOptions(ssl_context)
                 self.logger.info("SSL/TLS enabled for RabbitMQ connection")
             
             # Create connection parameters
