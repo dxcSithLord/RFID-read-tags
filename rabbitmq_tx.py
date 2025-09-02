@@ -1,51 +1,9 @@
 import logging
 import json
 import pika
+import os
 from datetime import datetime
 from typing import Dict, Optional
-
-"""
-I've updated the code to use RabbitMQ as the transmission endpoint. Here are the key changes and new features:
-
-New Dependencies:
-
-Added pika library for RabbitMQ communication
-Added json for message serialization
-RabbitMQ Integration:
-
-Connection Management: Automatic connection to RabbitMQ with configurable URL
-Queue Declaration: Creates durable queues if they don't exist
-Message Publishing: Messages are published as JSON with persistence
-Connection Recovery: Automatically reconnects if connection is lost
-New Configuration Options:
-
-rabbitmq_url: RabbitMQ server URL (default: 'amqp://localhost')
-queue_name: Target queue name (default: 'messages')
-exchange_name: Exchange to use (default: '' for default exchange)
-routing_key: Message routing key (defaults to queue_name)
-Enhanced Features:
-
-Context Manager Support: Use with statement for automatic connection cleanup
-Persistent Messages: Messages survive RabbitMQ server restarts
-JSON Serialization: Messages are automatically converted to JSON format
-Connection Lifecycle: Proper connection opening/closing with error handling
-Installation Requirements:
-
-bash
-pip install pika
-Basic Usage:
-
-python
-# Initialize with RabbitMQ settings
-transmitter = MessageTransmitter(
-    rabbitmq_url='amqp://guest:guest@localhost:5672/',
-    queue_name='my_queue'
-)
-
-# Messages are now published to RabbitMQ
-result = transmitter.transmit_message(data, "key1", "key2")
-The class now acts as a bridge between your dictionary data and RabbitMQ, maintaining all the original logging functionality while adding robust message queue transmission capabilities.
-"""
 
 class MessageTransmitter:
     """
@@ -54,18 +12,26 @@ class MessageTransmitter:
     """
     
     def __init__(self, log_file: Optional[str] = None, log_level: int = logging.INFO,
-                 rabbitmq_url: str = 'amqp://localhost', queue_name: str = 'messages',
-                 exchange_name: str = '', routing_key: str = ''):
+                 rabbitmq_host: str = 'localhost', rabbitmq_port: int = 5672,
+                 rabbitmq_vhost: str = '/', queue_name: str = 'messages',
+                 exchange_name: str = '', routing_key: str = '',
+                 username: Optional[str] = None, password: Optional[str] = None,
+                 use_ssl: bool = False):
         """
-        Initialize the MessageTransmitter with RabbitMQ connection.
+        Initialize the MessageTransmitter with secure RabbitMQ connection.
         
         Args:
             log_file (str, optional): Path to log file. If None, logs to console.
             log_level (int): Logging level (default: INFO)
-            rabbitmq_url (str): RabbitMQ connection URL (default: 'amqp://localhost')
+            rabbitmq_host (str): RabbitMQ host address (default: 'localhost')
+            rabbitmq_port (int): RabbitMQ port (default: 5672)
+            rabbitmq_vhost (str): RabbitMQ virtual host (default: '/')
             queue_name (str): RabbitMQ queue name (default: 'messages')
             exchange_name (str): RabbitMQ exchange name (default: '' for default exchange)
             routing_key (str): Routing key for messages (default: '' uses queue_name)
+            username (str, optional): Username for authentication (if None, checks env vars)
+            password (str, optional): Password for authentication (if None, checks env vars)
+            use_ssl (bool): Whether to use SSL/TLS connection (default: False)
         """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(log_level)
@@ -90,10 +56,19 @@ class MessageTransmitter:
         self.logger.addHandler(handler)
         
         # RabbitMQ configuration
-        self.rabbitmq_url = rabbitmq_url
+        self.rabbitmq_host = rabbitmq_host
+        self.rabbitmq_port = rabbitmq_port
+        self.rabbitmq_vhost = rabbitmq_vhost
         self.queue_name = queue_name
         self.exchange_name = exchange_name
         self.routing_key = routing_key or queue_name
+        self.use_ssl = use_ssl
+        
+        # Secure credential handling
+        self.username = username or os.getenv('RABBITMQ_USERNAME')
+        self.password = password or os.getenv('RABBITMQ_PASSWORD')
+        
+        # Connection objects
         self.connection = None
         self.channel = None
         
@@ -101,19 +76,50 @@ class MessageTransmitter:
         self._connect_to_rabbitmq()
     
     def _connect_to_rabbitmq(self):
-        """Establish connection to RabbitMQ and declare queue."""
+        """Establish secure connection to RabbitMQ and declare queue."""
         try:
-            # Parse connection URL and create connection
-            parameters = pika.URLParameters(self.rabbitmq_url)
+            # Create connection parameters
+            credentials = None
+            if self.username and self.password:
+                credentials = pika.PlainCredentials(self.username, self.password)
+                self.logger.info(f"Using credentials for user: {self.username}")
+            else:
+                self.logger.info("No credentials provided, using guest access or external auth")
+            
+            # Configure SSL if requested
+            ssl_options = None
+            if self.use_ssl:
+                ssl_options = pika.SSLOptions(context=None)  # Use default SSL context
+                self.logger.info("SSL/TLS enabled for RabbitMQ connection")
+            
+            # Create connection parameters
+            parameters = pika.ConnectionParameters(
+                host=self.rabbitmq_host,
+                port=self.rabbitmq_port,
+                virtual_host=self.rabbitmq_vhost,
+                credentials=credentials,
+                ssl_options=ssl_options,
+                heartbeat=600,  # Heartbeat every 10 minutes
+                blocked_connection_timeout=300  # 5 minute timeout
+            )
+            
+            # Establish connection
             self.connection = pika.BlockingConnection(parameters)
             self.channel = self.connection.channel()
             
             # Declare queue (create if it doesn't exist)
             self.channel.queue_declare(queue=self.queue_name, durable=True)
             
-            self.logger.info(f"Connected to RabbitMQ at {self.rabbitmq_url}")
+            protocol = "amqps" if self.use_ssl else "amqp"
+            self.logger.info(f"Connected to RabbitMQ at {protocol}://{self.rabbitmq_host}:{self.rabbitmq_port}")
             self.logger.info(f"Queue '{self.queue_name}' declared")
             
+        except pika.exceptions.ProbableAuthenticationError as e:
+            self.logger.error(f"Authentication failed - check username/password: {str(e)}")
+            raise
+        except pika.exceptions.ProbableAccessDeniedError as e:
+            self.logger.error(f"Access denied - check user permissions: {str(e)}")
+            raise
         except Exception as e:
             self.logger.error(f"Failed to connect to RabbitMQ: {str(e)}")
             raise
@@ -262,16 +268,21 @@ class MessageTransmitter:
 
 # Example usage
 if __name__ == "__main__":
-    # Create transmitter instance with RabbitMQ configuration
-    transmitter = MessageTransmitter(
-        log_file="message_log.txt",
-        rabbitmq_url='amqp://guest:guest@localhost:5672/',
-        queue_name='message_queue',
-        exchange_name='',
-        routing_key='message_queue'
-    )
+    # Example 1: Using environment variables (recommended)
+    # Set these in your environment or .env file:
+    # export RABBITMQ_USERNAME=myuser
+    # export RABBITMQ_PASSWORD=mypassword
     
+    print("Example 1: Using environment variables")
     try:
+        transmitter = MessageTransmitter(
+            log_file="message_log.txt",
+            rabbitmq_host='localhost',
+            rabbitmq_port=5672,
+            queue_name='secure_message_queue',
+            use_ssl=False  # Set to True for production
+        )
+        
         # Example message data
         sample_message = {
             "sender": "Alice",
@@ -282,43 +293,55 @@ if __name__ == "__main__":
         
         # Transmit single message to RabbitMQ
         result = transmitter.transmit_message(sample_message, "sender", "subject")
-        print("Message transmitted to RabbitMQ:", result)
-        
-        # Example batch transmission
-        batch_messages = [
-            {"title": "Alert", "content": "System update required"},
-            {"title": "Notification", "content": "New user registered"},
-            {"title": "Warning", "content": "Low disk space detected"}
-        ]
-        
-        batch_results = transmitter.batch_transmit(batch_messages, "title", "content")
-        print(f"Batch transmission completed: {len(batch_results)} messages sent to RabbitMQ")
+        print("Message transmitted to RabbitMQ:", result['combined_message'])
         
     except Exception as e:
         print(f"Error: {e}")
     finally:
-        # Always close the connection
-        transmitter.close_connection()
+        if 'transmitter' in locals():
+            transmitter.close_connection()
     
-    # Alternative usage with context manager (automatically closes connection)
-    print("\nUsing context manager:")
+    # Example 2: Using direct parameters (less secure, avoid in production)
+    print("\nExample 2: Direct parameter passing (development only)")
     try:
         with MessageTransmitter(
-            rabbitmq_url='amqp://guest:guest@localhost:5672/',
-            queue_name='test_queue'
+            rabbitmq_host='localhost',
+            rabbitmq_port=5672,
+            queue_name='test_queue',
+            username='testuser',  # Better to use env vars
+            password='testpass',  # Better to use env vars
+            use_ssl=False
         ) as transmitter:
-            message = {"type": "test", "data": "Hello RabbitMQ!"}
-            result = transmitter.transmit_message(message, "type", "data")
-            print("Context manager transmission successful")
+            
+            batch_messages = [
+                {"title": "Alert", "content": "System update required"},
+                {"title": "Notification", "content": "New user registered"},
+                {"title": "Warning", "content": "Low disk space detected"}
+            ]
+            
+            batch_results = transmitter.batch_transmit(batch_messages, "title", "content")
+            print(f"Batch transmission completed: {len(batch_results)} messages sent to RabbitMQ")
+            
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Context manager error: {e}")
     
-    # Example batch transmission
-    batch_messages = [
-        {"title": "Alert", "content": "System update required"},
-        {"title": "Notification", "content": "New user registered"},
-        {"title": "Warning", "content": "Low disk space detected"}
-    ]
+    # Example 3: Production-like configuration with SSL
+    print("\nExample 3: Production configuration with SSL")
+    print("# To use in production, set these environment variables:")
+    print("# export RABBITMQ_USERNAME=prod_user")
+    print("# export RABBITMQ_PASSWORD=secure_password")
+    print("# export RABBITMQ_HOST=rabbitmq.example.com")
+    print("# export RABBITMQ_PORT=5671")
     
-    batch_results = transmitter.batch_transmit(batch_messages, "title", "content")
-    print(f"Batch transmission completed: {len(batch_results)} messages sent")
+    production_config_example = """
+    # Production usage example:
+    transmitter = MessageTransmitter(
+        log_file="/var/log/message_transmitter.log",
+        rabbitmq_host=os.getenv('RABBITMQ_HOST', 'localhost'),
+        rabbitmq_port=int(os.getenv('RABBITMQ_PORT', 5671)),
+        queue_name='production_messages',
+        use_ssl=True,
+        # username and password automatically read from env vars
+    )
+    """
+    print(production_config_example)
