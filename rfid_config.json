@@ -1,0 +1,130 @@
+{
+  "locations": {
+      "OP1":
+    {
+      "name": "OP1",
+      "description": "Donetsk Oblast"
+    },
+      "OP2":
+    {
+      "name": "OP2",
+      "description": "Dnipropetrovsk Oblast"
+    },
+      "OP3":
+    {
+      "name": "OP3",
+      "description": "Zaporizhzhia Oblast"
+    },
+      "OP4":
+    {
+      "name": "OP4",
+      "description": "Kyiv Oblast"
+    },
+      "OP5":
+    {
+      "name": "OP5",
+      "description": "Kirovohrad Oblast"
+    },
+      "OP6":
+    {
+      "name": "OP6",
+      "description": "Mykolaiv Oblast"
+    },
+      "OP7":
+    {
+      "name": "OP7",
+      "description": "Odesa Oblast"
+    },
+      "OP8":
+    {
+      "name": "OP8",
+      "description": "Sumy Oblast"
+    }
+  },
+  "objects": {
+      "RFID1":
+    {
+      "name": "RFID1",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 1"
+    },
+      "RFID2":
+    {
+      "name": "RFID2",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 2"
+    },
+      "RFID3":
+    {
+      "name": "RFID3",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 3"
+    },
+      "RFID4":
+    {
+      "name": "RFID4",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 4"
+    },
+      "RFID5":
+    {
+      "name": "RFID5",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 5"
+    },
+      "RFID6":
+    {
+      "name": "RFID6",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 6"
+    },
+      "RFID7":
+    {
+      "name": "RFID7",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 7"
+    },
+      "RFID8":
+    {
+      "name": "RFID8",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 8"
+    },
+      "RFID9":
+    {
+      "name": "RFID9",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 9"
+    },
+      "RFID10":
+    {
+      "name": "RFID10",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 10"
+    },
+      "RFID11":
+    {
+      "name": "RFID11",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 11"
+    },
+      "RFID12":
+    {
+      "name": "RFID12",
+      "category": "EW",
+      "serial": "Russian Federation",
+      "description": "Radar 12"
+    }
+  }
+}
