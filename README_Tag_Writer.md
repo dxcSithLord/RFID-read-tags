@@ -109,7 +109,10 @@ export RABBITMQ_PORT=5672
 export RABBITMQ_QUEUE=rfid_messages
 export RABBITMQ_USERNAME=your_username
 export RABBITMQ_PASSWORD=your_password
+export RABBITMQ_USE_SSL="True"
 ```
+
+To use the SSL, need the Certificate Authority certificate installed on local environment.
 
 ## Usage
 
