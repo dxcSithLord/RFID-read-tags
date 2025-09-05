@@ -15,11 +15,16 @@ from enum import Enum
 try:
     from mfrc522 import SimpleMFRC522
     import RPi.GPIO as GPIO
-except ImportError:
-    print("Warning: MFRC522 library not found. Please install with: pip install mfrc522")
+    from gpiozero import RGBLED
+    from colorzero import Color
+except ImportError as e:
+    print(f"Warning: Required library not found: {e}")
+    print("Please install with: pip install mfrc522 gpiozero colorzero")
     print("Running in simulation mode...")
     SimpleMFRC522 = None
     GPIO = None
+    RGBLED = None
+    Color = None
 
 from rabbitmq_tx import MessageTransmitter
 
@@ -40,13 +45,60 @@ class ScannedItem:
 
 class RFIDScanner:
     """RFID scanner for reading SimpleMFRC522 tags"""
-
-    def __init__(self):
+    
+    def __init__(self, led_pins=(12, 13, 19)):
+        """
+        Initialize RFID scanner with LED status indicator
+        
+        Args:
+            led_pins: Tuple of (red, green, blue) GPIO pins for RGB LED
+        """
         self.reader = SimpleMFRC522() if SimpleMFRC522 else None
+        self.led = RGBLED(*led_pins) if RGBLED else None
+        self.led_active = False
+        
+    def set_led_color(self, color: str, flash: bool = False, duration: float = None):
+        """
+        Set LED color with optional flashing
+        
+        Args:
+            color: Color name ('white', 'yellow', 'blue', 'green', 'purple', 'red', 'off')
+            flash: Whether to flash the LED
+            duration: Duration to show color (None for indefinite)
+        """
+        if not self.led or not Color:
+            return
+            
+        color_map = {
+            'white': Color('white'),
+            'yellow': Color('yellow'), 
+            'blue': Color('blue'),
+            'green': Color('green'),
+            'purple': Color('purple'),
+            'red': Color('red'),
+            'off': Color('black')
+        }
+        
+        led_color = color_map.get(color.lower(), Color('white'))
+        
+        if flash:
+            # Flash the LED 3 times
+            for _ in range(3):
+                self.led.color = led_color
+                time.sleep(0.2)
+                self.led.color = Color('black')
+                time.sleep(0.2)
+            if duration:
+                time.sleep(duration)
+        else:
+            self.led.color = led_color
+            if duration:
+                time.sleep(duration)
+                self.led.color = Color('black')  # Turn off after duration
 
     def read_tag(self) -> Optional[Tuple[int, str]]:
         """
-        Read an RFID tag
+        Read an RFID tag with LED status indication
 
         Returns:
             Tuple of (id, text) if successful, None otherwise
@@ -56,23 +108,37 @@ class RFIDScanner:
             return self._simulate_tag_read()
 
         try:
-            print("Hold a tag near the reader...")
+            # Show white LED while waiting for tag
+            self.set_led_color('white')
+            logging.info("Hold a tag near the reader...")
+            
             tag_id, text = self.reader.read()
+            
+            # Turn off LED after successful read
+            self.set_led_color('off')
+            
             return tag_id, text.strip()
         except Exception as e:
             logging.error(f"Error reading RFID tag: {e}")
+            self.set_led_color('off')
             return None
 
     def _simulate_tag_read(self) -> Optional[Tuple[int, str]]:
         """Simulate tag reading for testing purposes"""
         import random
-
+        
+        # Show white LED while simulating
+        self.set_led_color('white')
+        
         # Simulate some delay
         time.sleep(2)
-
+        
+        # Turn off LED
+        self.set_led_color('off')
+        
         # Return simulated data
-        sample_objects = ["obj001", "obj002", "obj003"]
-        sample_locations = ["loc001", "loc002", "loc003"]
+        sample_objects = ["RFID1", "RFID2", "RFID3"]
+        sample_locations = ["OP1", "OP2", "OP3"]
 
         if random.choice([True, False]):
             return random.randint(1000, 9999), random.choice(sample_objects)
@@ -81,6 +147,8 @@ class RFIDScanner:
 
     def cleanup(self):
         """Clean up GPIO resources"""
+        if self.led:
+            self.led.close()
         if GPIO:
             GPIO.cleanup()
 
@@ -184,7 +252,7 @@ class RFIDRabbitMQScanner:
     """Main scanner class that coordinates RFID reading and RabbitMQ messaging"""
 
     def __init__(self, config_file: str = "rfid_config.json",
-                       led_pins: Tuple = (12, 13, 19), **rabbitmq_kwargs):
+                 led_pins: Tuple = (12, 13, 19), **rabbitmq_kwargs):
         """
         Initialize the RFID scanner
 
@@ -201,7 +269,7 @@ class RFIDRabbitMQScanner:
         self.logger = logging.getLogger(__name__)
 
         # Initialize components
-        self.rfid_scanner = RFIDScanner()
+        self.rfid_scanner = RFIDScanner(led_pins)
         self.config_manager = ConfigManager(config_file)
         self.message_transmitter = MessageTransmitter(**rabbitmq_kwargs)
 
@@ -285,7 +353,7 @@ class RFIDRabbitMQScanner:
             },
             "action": {
                 "type": "object_location_scan",
-                "description": f"Object {object_item.data.get('name', object_item.item_id)} scanned at location {location_item.data
+                "description": f"Object {object_item.data.get('name', object_item.item_id)} scanned at location {location_item.data.get('name', location_item.item_id)}"
             }
         }
 
@@ -299,7 +367,7 @@ class RFIDRabbitMQScanner:
 
     def _process_scanned_item(self, scanned_item: ScannedItem) -> bool:
         """
-        Process a newly scanned item
+        Process a newly scanned item with LED status indication
 
         Args:
             scanned_item: The scanned item
@@ -315,16 +383,22 @@ class RFIDRabbitMQScanner:
                 self.logger.info(f"Replacing previous object scan with {item_name}")
             self.object_item = scanned_item
             self.logger.info(f"Object scanned: {item_name}")
+            # Flash yellow for object
+            self.rfid_scanner.set_led_color('yellow', flash=True)
 
         elif item_type == ItemType.LOCATION:
             if self.location_item:
                 self.logger.info(f"Replacing previous location scan with {item_name}")
             self.location_item = scanned_item
             self.logger.info(f"Location scanned: {item_name}")
+            # Flash blue for location
+            self.rfid_scanner.set_led_color('blue', flash=True)
 
         # Check if we have both items
         if self.object_item and self.location_item:
             self.logger.info("Both object and location scanned - ready to send message")
+            # Flash green when both items are ready
+            self.rfid_scanner.set_led_color('green', flash=True)
             return True
         else:
             missing = "location" if self.object_item else "object"
@@ -341,6 +415,8 @@ class RFIDRabbitMQScanner:
         # Read RFID tag
         tag_data = self.rfid_scanner.read_tag()
         if not tag_data:
+            # Flash red briefly for read failure, then turn off
+            self.rfid_scanner.set_led_color('red', flash=True)
             return False
 
         tag_id, item_id = tag_data
@@ -349,6 +425,8 @@ class RFIDRabbitMQScanner:
         # Create scanned item
         scanned_item = self._create_scanned_item(tag_id, item_id)
         if not scanned_item:
+            # Flash red for unknown item, then turn off
+            self.rfid_scanner.set_led_color('red', flash=True)
             return False
 
         # Process the scanned item
@@ -360,6 +438,9 @@ class RFIDRabbitMQScanner:
                 message = self._create_message(self.object_item, self.location_item)
                 self.message_transmitter.transmit_message(message)
 
+                # Show solid purple for 2 seconds after successful transmission
+                self.rfid_scanner.set_led_color('purple', duration=2.0)
+
                 self.logger.info("Message sent successfully!")
                 self.logger.info(f"Object: {self.object_item.data.get('name')} -> Location: {self.location_item.data.get('name')}")
 
@@ -369,6 +450,8 @@ class RFIDRabbitMQScanner:
 
             except Exception as e:
                 self.logger.error(f"Error sending message: {e}")
+                # Flash red on error
+                self.rfid_scanner.set_led_color('red', flash=True)
                 return False
 
         return False
@@ -377,6 +460,13 @@ class RFIDRabbitMQScanner:
         """Run the scanner continuously"""
         self.logger.info("Starting RFID scanner...")
         self.logger.info("Scan an object and a location to send a message")
+
+        # Brief startup indication - flash all colors
+        if self.rfid_scanner.led:
+            self.rfid_scanner.set_led_color('red', duration=0.3)
+            self.rfid_scanner.set_led_color('green', duration=0.3)
+            self.rfid_scanner.set_led_color('blue', duration=0.3)
+            self.rfid_scanner.set_led_color('off')
 
         try:
             while True:
@@ -389,9 +479,13 @@ class RFIDRabbitMQScanner:
                     break
                 except Exception as e:
                     self.logger.error(f"Unexpected error: {e}")
+                    # Flash red for unexpected errors
+                    self.rfid_scanner.set_led_color('red', flash=True)
                     time.sleep(1)
 
         finally:
+            # Turn off LED before cleanup
+            self.rfid_scanner.set_led_color('off')
             self.cleanup()
 
     def cleanup(self):
@@ -399,6 +493,7 @@ class RFIDRabbitMQScanner:
         self.rfid_scanner.cleanup()
         if hasattr(self.message_transmitter, 'cleanup'):
             self.message_transmitter.cleanup()
+        self.logger.info("Scanner cleanup completed")
 
 
 def main():
@@ -420,10 +515,9 @@ def main():
     # Create and run scanner
     scanner = RFIDRabbitMQScanner(
         config_file="rfid_config.json",
+        led_pins=(12, 13, 19),  # GPIO pins for RGB LED (red, green, blue)
         **rabbitmq_config
     )
-
-    led_pins=(12, 13, 19),  # GPIO pins for RGB LED (red, green, blue)
 
     scanner.run()
 
