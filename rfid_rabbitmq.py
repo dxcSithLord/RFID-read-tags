@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RFID-based RabbitMQ Scanner
+RFID-based RabbitMQ Scanner (Updated to use EnhancedConfigManager)
 Reads RFID tags to identify objects and locations, then sends messages via RabbitMQ
 """
 
@@ -27,6 +27,7 @@ except ImportError as e:
     Color = None
 
 from rabbitmq_tx import MessageTransmitter
+from enhanced_config_manager import EnhancedConfigManager
 
 
 class ItemType(Enum):
@@ -46,16 +47,18 @@ class ScannedItem:
 class RFIDScanner:
     """RFID scanner for reading SimpleMFRC522 tags"""
     
-    def __init__(self, led_pins=(12, 13, 19)):
+    def __init__(self, led_pins=(12, 13, 19), timing_config=None):
         """
         Initialize RFID scanner with LED status indicator
         
         Args:
             led_pins: Tuple of (red, green, blue) GPIO pins for RGB LED
+            timing_config: Timing configuration object
         """
         self.reader = SimpleMFRC522() if SimpleMFRC522 else None
         self.led = RGBLED(*led_pins) if RGBLED else None
         self.led_active = False
+        self.timing_config = timing_config
         
     def set_led_color(self, color: str, flash: bool = False, duration: float = None):
         """
@@ -64,10 +67,14 @@ class RFIDScanner:
         Args:
             color: Color name ('white', 'yellow', 'blue', 'green', 'purple', 'red', 'off')
             flash: Whether to flash the LED
-            duration: Duration to show color (None for indefinite)
+            duration: Duration to show color (None for indefinite, uses config default for green)
         """
         if not self.led or not Color:
             return
+            
+        # Use config default for green flash duration if not specified
+        if duration is None and color.lower() == 'green' and self.timing_config:
+            duration = self.timing_config.green_flash_duration
             
         color_map = {
             'white': Color('white'),
@@ -130,8 +137,9 @@ class RFIDScanner:
         # Show white LED while simulating
         self.set_led_color('white')
         
-        # Simulate some delay
-        time.sleep(2)
+        # Use configured read interval if available
+        delay = self.timing_config.read_interval if self.timing_config else 2
+        time.sleep(delay)
         
         # Turn off LED
         self.set_led_color('off')
@@ -153,132 +161,56 @@ class RFIDScanner:
             GPIO.cleanup()
 
 
-class ConfigManager:
-    """Manages configuration data from JSON file"""
-
-    def __init__(self, config_file: str = "rfid_config.json"):
-        self.config_file = config_file
-        self.config_data = self._load_config()
-
-    def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from JSON file"""
-        try:
-            with open(self.config_file, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            logging.warning(f"Config file {self.config_file} not found. Creating sample config...")
-            return self._create_sample_config()
-        except json.JSONDecodeError as e:
-            logging.error(f"Error parsing config file: {e}")
-            return {}
-
-    def _create_sample_config(self) -> Dict[str, Any]:
-        """Create a sample configuration file"""
-        sample_config = {
-            "objects": {
-                "obj001": {
-                    "name": "Widget A",
-                    "description": "Standard widget for assembly line",
-                    "category": "component",
-                    "weight": 0.5,
-                    "dimensions": {"length": 10, "width": 5, "height": 2}
-                },
-                "obj002": {
-                    "name": "Tool B",
-                    "description": "Precision measurement tool",
-                    "category": "tool",
-                    "weight": 1.2,
-                    "calibration_date": "2024-01-15"
-                },
-                "obj003": {
-                    "name": "Component C",
-                    "description": "Electronic component",
-                    "category": "electronics",
-                    "weight": 0.1,
-                    "voltage": 5.0
-                }
-            },
-            "locations": {
-                "loc001": {
-                    "name": "Assembly Station 1",
-                    "description": "Primary assembly workstation",
-                    "zone": "production",
-                    "capacity": 50,
-                    "coordinates": {"x": 10, "y": 20, "z": 0}
-                },
-                "loc002": {
-                    "name": "Quality Control",
-                    "description": "Quality inspection station",
-                    "zone": "quality",
-                    "capacity": 20,
-                    "equipment": ["scanner", "scale", "calipers"]
-                },
-                "loc003": {
-                    "name": "Storage Rack A1",
-                    "description": "Primary storage location",
-                    "zone": "warehouse",
-                    "capacity": 100,
-                    "temperature_controlled": True
-                }
-            }
-        }
-
-        # Save sample config
-        try:
-            with open(self.config_file, 'w') as f:
-                json.dump(sample_config, f, indent=2)
-            logging.info(f"Created sample config file: {self.config_file}")
-        except Exception as e:
-            logging.error(f"Error creating sample config: {e}")
-
-        return sample_config
-
-    def get_item_data(self, item_id: str, item_type: ItemType) -> Optional[Dict[str, Any]]:
-        """
-        Get item data from configuration
-
-        Args:
-            item_id: Item identifier
-            item_type: Type of item (object or location)
-
-        Returns:
-            Dictionary with item data or None if not found
-        """
-        section = item_type.value + "s"  # "objects" or "locations"
-        return self.config_data.get(section, {}).get(item_id)
-
-
 class RFIDRabbitMQScanner:
     """Main scanner class that coordinates RFID reading and RabbitMQ messaging"""
 
-    def __init__(self, config_file: str = "rfid_config.json",
-                 led_pins: Tuple = (12, 13, 19), **rabbitmq_kwargs):
+    def __init__(self, config_file: str = "rfid_config.json"):
         """
-        Initialize the RFID scanner
+        Initialize the RFID scanner using enhanced configuration manager
 
         Args:
             config_file: Path to JSON configuration file
-            led_pins: Tuple of (red, green, blue) GPIO pins for RGB LED
-            **rabbitmq_kwargs: Arguments for MessageTransmitter
         """
-        # Set up logging
+        # Initialize configuration manager
+        self.config_manager = EnhancedConfigManager(config_file)
+        
+        # Set up logging based on configuration
+        log_level = getattr(logging, self.config_manager.logging_config.level.upper(), logging.INFO)
         logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            level=log_level,
+            format=self.config_manager.logging_config.format,
+            datefmt=self.config_manager.logging_config.date_format,
+            filename=self.config_manager.logging_config.file
         )
         self.logger = logging.getLogger(__name__)
 
-        # Initialize components
-        self.rfid_scanner = RFIDScanner(led_pins)
-        self.config_manager = ConfigManager(config_file)
-        self.message_transmitter = MessageTransmitter(**rabbitmq_kwargs)
+        # Validate configuration
+        validation_errors = self.config_manager.validate_configuration()
+        if validation_errors:
+            self.logger.warning("Configuration validation errors found:")
+            for error in validation_errors:
+                self.logger.warning(f"  - {error}")
+
+        # Initialize components with configuration
+        self.rfid_scanner = RFIDScanner(
+            led_pins=self.config_manager.get_led_pins(),
+            timing_config=self.config_manager.timing
+        )
+        
+        # Get RabbitMQ configuration and initialize transmitter
+        rabbitmq_config = self.config_manager.get_rabbitmq_config()
+        self.message_transmitter = MessageTransmitter(**rabbitmq_config)
 
         # Track scanned items
         self.scanned_items = []
         self.object_item = None
         self.location_item = None
 
-        self.logger.info("RFID RabbitMQ Scanner initialized")
+        # Update service start statistics
+        self.config_manager.increment_service_starts()
+        
+        self.logger.info("RFID RabbitMQ Scanner initialized with enhanced configuration")
+        self.logger.info(f"Configuration summary: {self.config_manager.get_summary()}")
 
     def _determine_item_type(self, item_id: str) -> Optional[ItemType]:
         """
@@ -291,11 +223,11 @@ class RFIDRabbitMQScanner:
             ItemType or None if not found
         """
         # Check if it's an object
-        if self.config_manager.get_item_data(item_id, ItemType.OBJECT):
+        if self.config_manager.get_item_data(item_id, "object"):
             return ItemType.OBJECT
 
         # Check if it's a location
-        if self.config_manager.get_item_data(item_id, ItemType.LOCATION):
+        if self.config_manager.get_item_data(item_id, "location"):
             return ItemType.LOCATION
 
         return None
@@ -316,7 +248,7 @@ class RFIDRabbitMQScanner:
             self.logger.warning(f"Unknown item ID: {item_id}")
             return None
 
-        item_data = self.config_manager.get_item_data(item_id, item_type)
+        item_data = self.config_manager.get_item_data(item_id, item_type.value)
         if not item_data:
             self.logger.warning(f"No data found for {item_type.value} {item_id}")
             return None
@@ -354,6 +286,10 @@ class RFIDRabbitMQScanner:
             "action": {
                 "type": "object_location_scan",
                 "description": f"Object {object_item.data.get('name', object_item.item_id)} scanned at location {location_item.data.get('name', location_item.item_id)}"
+            },
+            "scanner_info": {
+                "service_starts": self.config_manager.statistics.service_starts,
+                "config_file": self.config_manager.config_file
             }
         }
 
@@ -397,7 +333,7 @@ class RFIDRabbitMQScanner:
         # Check if we have both items
         if self.object_item and self.location_item:
             self.logger.info("Both object and location scanned - ready to send message")
-            # Flash green when both items are ready
+            # Flash green when both items are ready (uses configured duration)
             self.rfid_scanner.set_led_color('green', flash=True)
             return True
         else:
@@ -434,6 +370,12 @@ class RFIDRabbitMQScanner:
 
         if ready_to_send:
             try:
+                # Update scan statistics
+                self.config_manager.update_last_scan()
+                self.config_manager.update_statistics(
+                    total_tags=self.config_manager.statistics.total_tags + 1
+                )
+
                 # Create and send message
                 message = self._create_message(self.object_item, self.location_item)
                 self.message_transmitter.transmit_message(message)
@@ -443,6 +385,9 @@ class RFIDRabbitMQScanner:
 
                 self.logger.info("Message sent successfully!")
                 self.logger.info(f"Object: {self.object_item.data.get('name')} -> Location: {self.location_item.data.get('name')}")
+
+                # Save updated configuration (statistics)
+                self.config_manager.save_configuration()
 
                 # Reset state for next scan pair
                 self._reset_scan_state()
@@ -472,7 +417,8 @@ class RFIDRabbitMQScanner:
             while True:
                 try:
                     self.run_once()
-                    time.sleep(0.5)  # Small delay between scans
+                    # Use configured read interval
+                    time.sleep(self.config_manager.timing.read_interval)
 
                 except KeyboardInterrupt:
                     self.logger.info("Stopping scanner...")
@@ -486,7 +432,71 @@ class RFIDRabbitMQScanner:
         finally:
             # Turn off LED before cleanup
             self.rfid_scanner.set_led_color('off')
+            # Save final configuration state
+            self.config_manager.save_configuration()
             self.cleanup()
+
+    def add_new_item(self, item_id: str, item_type: str, item_data: Dict[str, Any]) -> bool:
+        """
+        Add a new item to the configuration
+        
+        Args:
+            item_id: Item identifier
+            item_type: Type of item ("object" or "location")
+            item_data: Item data dictionary
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        success = self.config_manager.add_item(item_id, item_type, item_data)
+        if success:
+            self.config_manager.save_configuration()
+            self.logger.info(f"Added new {item_type}: {item_id}")
+        return success
+
+    def remove_item(self, item_id: str, item_type: str) -> bool:
+        """
+        Remove an item from the configuration
+        
+        Args:
+            item_id: Item identifier
+            item_type: Type of item ("object" or "location")
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        success = self.config_manager.remove_item(item_id, item_type)
+        if success:
+            self.config_manager.save_configuration()
+            self.logger.info(f"Removed {item_type}: {item_id}")
+        return success
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        Get current scanner statistics
+        
+        Returns:
+            Dictionary with statistics
+        """
+        return {
+            "total_tags": self.config_manager.statistics.total_tags,
+            "service_starts": self.config_manager.statistics.service_starts,
+            "last_scan": self.config_manager.statistics.last_scan,
+            "objects_count": len(self.config_manager.get_all_items("objects")),
+            "locations_count": len(self.config_manager.get_all_items("locations"))
+        }
+
+    def list_items(self, item_type: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+        """
+        List all items of specified type
+        
+        Args:
+            item_type: Type of item ("object", "location", or None for all)
+            
+        Returns:
+            Dictionary with items
+        """
+        return self.config_manager.get_all_items(item_type)
 
     def cleanup(self):
         """Clean up resources"""
@@ -498,27 +508,24 @@ class RFIDRabbitMQScanner:
 
 def main():
     """Main entry point"""
-    # RabbitMQ configuration
-    rabbitmq_config = {
-        'log_level': logging.INFO,
-        'rabbitmq_host': os.getenv('RABBITMQ_HOST', 'localhost'),
-        'rabbitmq_port': int(os.getenv('RABBITMQ_PORT', '5672')),
-        'rabbitmq_vhost': os.getenv('RABBITMQ_VHOST', '/'),
-        'queue_name': os.getenv('RABBITMQ_QUEUE', 'rfid_messages'),
-        'exchange_name': os.getenv('RABBITMQ_EXCHANGE', ''),
-        'routing_key': os.getenv('RABBITMQ_ROUTING_KEY', ''),
-        'username': os.getenv('RABBITMQ_USERNAME'),
-        'password': os.getenv('RABBITMQ_PASSWORD'),
-        'use_ssl': os.getenv('RABBITMQ_USE_SSL', 'false').lower() == 'true'
-    }
-
-    # Create and run scanner
-    scanner = RFIDRabbitMQScanner(
-        config_file="rfid_config.json",
-        led_pins=(12, 13, 19),  # GPIO pins for RGB LED (red, green, blue)
-        **rabbitmq_config
-    )
-
+    # Create scanner with configuration file
+    config_file = os.getenv('RFID_CONFIG_FILE', 'rfid_config.json')
+    scanner = RFIDRabbitMQScanner(config_file=config_file)
+    
+    # Print configuration summary on startup
+    print(f"RFID Scanner Configuration Summary:")
+    summary = scanner.config_manager.get_summary()
+    for key, value in summary.items():
+        print(f"  {key}: {value}")
+    
+    # Check for validation errors
+    errors = scanner.config_manager.validate_configuration()
+    if errors:
+        print("Configuration validation warnings:")
+        for error in errors:
+            print(f"  - {error}")
+    
+    # Run the scanner
     scanner.run()
 
 
