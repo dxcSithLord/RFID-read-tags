@@ -69,7 +69,7 @@ class RFIDScanner:
         """Update RabbitMQ connection status for LED indication"""
         self.rabbitmq_connected = connected
         
-    def set_led_color(self, color: str, flash: bool = False, duration: float = None):
+    def set_led_color(self, color: str, flash: bool = False, duration: float = 1.0):
         """
         Set LED color with optional flashing
         
@@ -310,12 +310,13 @@ class RFIDScanner:
 class RFIDRabbitMQScanner:
     """Main scanner class that coordinates RFID reading and RabbitMQ messaging"""
 
-    def __init__(self, config_file: str = "rfid_config.json"):
+    def __init__(self, config_file: str = "rfid_config.json", test_mode: bool = False):
         """
         Initialize the RFID scanner using enhanced configuration manager
 
         Args:
             config_file: Path to JSON configuration file
+            test_mode: Enable test/simulation mode
         """
         # Initialize configuration manager
         self.config_manager = EnhancedConfigManager(config_file)
@@ -340,23 +341,40 @@ class RFIDRabbitMQScanner:
         # Initialize components with configuration
         self.rfid_scanner = RFIDScanner(
             led_pins=self.config_manager.get_led_pins(),
-            timing_config=self.config_manager.timing
+            timing_config=self.config_manager.timing,
+            test_mode=test_mode
         )
         
         # Get RabbitMQ configuration and initialize transmitter
         rabbitmq_config = self.config_manager.get_rabbitmq_config()
-        self.message_transmitter = MessageTransmitter(**rabbitmq_config)
+        
+        # Initialize MessageTransmitter with status callback
+        self.message_transmitter = MessageTransmitter(
+            status_callback=self._rabbitmq_status_callback,
+            config=self.config_manager,
+            **rabbitmq_config
+        )
 
         # Track scanned items
         self.scanned_items = []
         self.object_item = None
         self.location_item = None
+        self.test_mode = test_mode
 
         # Update service start statistics
         self.config_manager.increment_service_starts()
         
         self.logger.info("RFID RabbitMQ Scanner initialized with enhanced configuration")
         self.logger.info(f"Configuration summary: {self.config_manager.get_summary()}")
+
+    def _rabbitmq_status_callback(self, connected: bool):
+        """
+        Callback method to handle RabbitMQ connection status changes
+        
+        Args:
+            connected: True if RabbitMQ is connected, False otherwise
+        """
+        self.rfid_scanner.set_rabbitmq_status(connected)
 
     def _determine_item_type(self, item_id: str) -> Optional[ItemType]:
         """
@@ -405,40 +423,40 @@ class RFIDRabbitMQScanner:
             data=item_data
         )
 
+    def get_device_id(self):
+        """Get device identifier (same as tx_message.py)"""
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                for line in f:
+                    if line.startswith('Serial'):
+                        return line.split(':')[1].strip()
+            return 'unknown_bookworm'
+        except:
+            return 'unknown_bookworm'
+
     def _create_message(self, object_item: ScannedItem, location_item: ScannedItem) -> Dict[str, Any]:
         """
-        Create message content for RabbitMQ
+        Create message content for RabbitMQ matching tx_message.py format
 
         Args:
             object_item: Scanned object item
             location_item: Scanned location item
 
         Returns:
-            Dictionary with message content
+            Dictionary with message content matching tx_message.py format
         """
         message = {
-            "timestamp": time.time(),
-            "scan_type": "rfid",
-            "object": {
-                "id": object_item.item_id,
-                "type": "object",
-                "data": object_item.data
-            },
-            "location": {
-                "id": location_item.item_id,
-                "type": "location",
-                "data": location_item.data
-            },
-            "action": {
-                "type": "object_location_scan",
-                "description": f"Object {object_item.data.get('name', object_item.item_id)} scanned at location {location_item.data.get('name', location_item.item_id)}"
-            },
-            "scanner_info": {
-                "service_starts": self.config_manager.statistics.service_starts,
-                "config_file": self.config_manager.config_file
-            }
+            'timestamp': datetime.now().isoformat(),
+            'scanner_id': f"rf-pi_{self.get_device_id()}",
+            'object_code': object_item.item_id,
+            'object_info': object_item.data,
+            'location_code': location_item.item_id,
+            'location_info': location_item.data,
+            'event_type': 'object_location_update',
+            'source': 'bookworm_qr_scanner'  # Keeping consistent with tx_message.py
         }
-
+        
+        self.logger.info(f"Created message: {object_item.item_id} -> {location_item.item_id}")
         return message
 
     def _reset_scan_state(self):
