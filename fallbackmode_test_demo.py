@@ -8,8 +8,8 @@ import time
 import json
 import logging
 from pathlib import Path
-from enhanced_rabbitmq_tx import EnhancedMessageTransmitter
-from enhanced_config_manager import EnhancedConfigManager
+import rabbitmq_etx 
+import enhanced_config_manager
 
 def setup_demo_environment():
     """Set up demo configuration and logging"""
@@ -108,7 +108,7 @@ def demo_fallback_messaging():
     
     # Create enhanced transmitter with invalid host (to force fallback)
     print("Creating message transmitter with invalid RabbitMQ host...")
-    transmitter = EnhancedMessageTransmitter(
+    transmitter = rabbitmq_etx.EnhancedMessageTransmitter(
         rabbitmq_host='invalid-host-for-demo.local',
         rabbitmq_port=5672,
         queue_name='demo_fallback_queue',
@@ -210,7 +210,7 @@ def demo_rfid_scanner_fallback():
     
     try:
         # Import the updated scanner
-        from updated_rfid_rabbitmq import RFIDRabbitMQScanner
+        from rfid_rabbitmq_e import RFIDRabbitMQScanner
         
         # Create scanner in test mode with demo config
         print("Creating RFID scanner in test mode...")
