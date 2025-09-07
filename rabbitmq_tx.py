@@ -5,263 +5,163 @@ import os
 import ssl
 from datetime import datetime
 from typing import Dict, Optional
+from enhanced_config_manager import EnhancedConfigManager
+import time
 
 class MessageTransmitter:
     """
-    A class to transmit messages composed of any number of key-value pairs from a dictionary,
-    with RabbitMQ as the transmission endpoint and logging capabilities.
+    Updated MessageTransmitter with tx_message.py compatible RabbitMQ publishing
     """
     
-    def __init__(self, log_file: Optional[str] = None, log_level: int = logging.INFO,
-                 rabbitmq_host: str = 'localhost', rabbitmq_port: int = 5672,
-                 rabbitmq_vhost: str = '/', queue_name: str = 'messages',
-                 exchange_name: str = '', routing_key: str = '',
-                 username: Optional[str] = None, password: Optional[str] = None,
-                 use_ssl: bool = False):
+    def __init__(self, config: EnhancedConfigManager, status_callback=None, **kwargs):
         """
-        Initialize the MessageTransmitter with secure RabbitMQ connection.
+        Initialize MessageTransmitter with configuration manager
         
         Args:
-            log_file (str, optional): Path to log file. If None, logs to console.
-            log_level (int): Logging level (default: INFO)
-            rabbitmq_host (str): RabbitMQ host address (default: 'localhost')
-            rabbitmq_port (int): RabbitMQ port (default: 5672)
-            rabbitmq_vhost (str): RabbitMQ virtual host (default: '/')
-            queue_name (str): RabbitMQ queue name (default: 'messages')
-            exchange_name (str): RabbitMQ exchange name (default: '' for default exchange)
-            routing_key (str): Routing key for messages (default: '' uses queue_name)
-            username (str, optional): Username for authentication (if None, checks env vars)
-            password (str, optional): Password for authentication (if None, checks env vars)
-            use_ssl (bool): Whether to use SSL/TLS connection (default: False)
+            config: EnhancedConfigManager instance
+            status_callback: Callback for connection status changes
         """
+        self.config = config
+        self.status_callback = status_callback
+        self.rabbitmq_channel = None
+        self.rabbitmq_connection = None
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.setLevel(log_level)
-        
-        # Remove existing handlers to avoid duplicates
-        for handler in self.logger.handlers[:]:
-            self.logger.removeHandler(handler)
-        
-        # Create formatter with date and time
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        
-        # Configure handler (file or console)
-        if log_file:
-            handler = logging.FileHandler(log_file)
-        else:
-            handler = logging.StreamHandler()
-        
-        handler.setFormatter(formatter)
-        self.logger.addHandler(handler)
-        
-        # RabbitMQ configuration
-        self.rabbitmq_host = rabbitmq_host
-        self.rabbitmq_port = rabbitmq_port
-        self.rabbitmq_vhost = rabbitmq_vhost
-        self.queue_name = queue_name
-        self.exchange_name = exchange_name
-        self.routing_key = routing_key or queue_name
-        self.use_ssl = use_ssl
-        
-        # Secure credential handling
-        self.username = username or os.getenv('RABBITMQ_USERNAME')
-        self.password = password or os.getenv('RABBITMQ_PASSWORD')
-        
-        # Connection objects
-        self.connection = None
-        self.channel = None
         
         # Initialize RabbitMQ connection
         self._connect_to_rabbitmq()
     
     def _connect_to_rabbitmq(self):
-        """Establish secure connection to RabbitMQ and declare queue."""
+        """Establish RabbitMQ connection"""
         try:
+            rabbitmq_config = self.config.rabbitmq
+            
             # Create connection parameters
             credentials = None
-            if self.username and self.password:
-                credentials = pika.PlainCredentials(self.username, self.password)
-                self.logger.info(f"Using credentials for user: {self.username}")
-            else:
-                self.logger.info("No credentials provided, using guest access or external auth")
-            
-            # Configure SSL if requested
-            ssl_options = None
-            if self.use_ssl:
-                # Create a default SSL context
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False  # Disable hostname verification for development
-                ssl_options = pika.SSLOptions(ssl_context)
-                self.logger.info("SSL/TLS enabled for RabbitMQ connection")
-            
-            # Create connection parameters
-            parameters = pika.ConnectionParameters(
-                host=self.rabbitmq_host,
-                port=self.rabbitmq_port,
-                virtual_host=self.rabbitmq_vhost,
-                credentials=credentials,
-                ssl_options=ssl_options,
-                heartbeat=600,  # Heartbeat every 10 minutes
-                blocked_connection_timeout=300  # 5 minute timeout
-            )
-            
-            # Establish connection
-            self.connection = pika.BlockingConnection(parameters)
-            self.channel = self.connection.channel()
-            
-            # Declare queue (create if it doesn't exist)
-            self.channel.queue_declare(queue=self.queue_name, durable=True)
-            
-            protocol = "amqps" if self.use_ssl else "amqp"
-            self.logger.info(f"Connected to RabbitMQ at {protocol}://{self.rabbitmq_host}:{self.rabbitmq_port}")
-            self.logger.info(f"Queue '{self.queue_name}' declared")
-            
-        except pika.exceptions.ProbableAuthenticationError as e:
-            self.logger.error(f"Authentication failed - check username/password: {str(e)}")
-            raise
-        except pika.exceptions.ProbableAccessDeniedError as e:
-            self.logger.error(f"Access denied - check user permissions: {str(e)}")
-            raise
-        except Exception as e:
-            self.logger.error(f"Failed to connect to RabbitMQ: {str(e)}")
-            raise
-    
-    def _publish_to_rabbitmq(self, message: Dict) -> bool:
-        """
-        Publish message to RabbitMQ queue.
-        
-        Args:
-            message (Dict): Message to publish
-            
-        Returns:
-            bool: True if published successfully, False otherwise
-        """
-        try:
-            # Ensure connection is active
-            if not self.connection or self.connection.is_closed:
-                self._connect_to_rabbitmq()
-            
-            # Convert message to JSON string
-            message_body = json.dumps(message, indent=2, default=str)  # default=str handles non-serializable types
-            
-            # Publish message
-            self.channel.basic_publish(
-                exchange=self.exchange_name,
-                routing_key=self.routing_key,
-                body=message_body,
-                properties=pika.BasicProperties(
-                    delivery_mode=2,  # Make message persistent
-                    content_type='application/json',
-                    timestamp=int(datetime.now().timestamp())
+            if rabbitmq_config.username and rabbitmq_config.password:
+                credentials = pika.PlainCredentials(
+                    rabbitmq_config.username, 
+                    rabbitmq_config.password
                 )
+            
+            parameters = pika.ConnectionParameters(
+                host=rabbitmq_config.host,
+                port=rabbitmq_config.port,
+                virtual_host=rabbitmq_config.virtual_host,
+                credentials=credentials,
+                heartbeat=600,
+                blocked_connection_timeout=5.0
             )
             
-            self.logger.info(f"Message published to RabbitMQ queue '{self.queue_name}'")
-            return True
+            self.rabbitmq_connection = pika.BlockingConnection(parameters)
+            self.rabbitmq_channel = self.rabbitmq_connection.channel()
             
+            # Declare exchange and queue if needed
+            if rabbitmq_config.exchange:
+                self.rabbitmq_channel.exchange_declare(
+                    exchange=rabbitmq_config.exchange,
+                    exchange_type='direct',
+                    durable=True
+                )
+            
+            self.rabbitmq_channel.queue_declare(
+                queue=rabbitmq_config.queue_name,
+                durable=True
+            )
+            
+            self.logger.info(f"Connected to RabbitMQ at {rabbitmq_config.host}:{rabbitmq_config.port}")
+            
+            if self.status_callback:
+                self.status_callback(True)
+                
         except Exception as e:
-            self.logger.error(f"Failed to publish message to RabbitMQ: {str(e)}")
-            return False
+            self.logger.error(f"Failed to connect to RabbitMQ: {e}")
+            self.rabbitmq_channel = None
+            self.rabbitmq_connection = None
+            
+            if self.status_callback:
+                self.status_callback(False)
     
-    def close_connection(self):
-        """Close the RabbitMQ connection."""
+    def send_rabbitmq_message(self, message):
+        """Send message to RabbitMQ or log locally (same as tx_message.py)"""
         try:
-            if self.connection and not self.connection.is_closed:
-                self.connection.close()
-                self.logger.info("RabbitMQ connection closed")
+            if self.rabbitmq_channel:
+                rabbitmq_config = self.config.rabbitmq
+                
+                self.rabbitmq_channel.basic_publish(
+                    exchange=rabbitmq_config.exchange,
+                    routing_key=rabbitmq_config.routing_key_scan,
+                    body=json.dumps(message, indent=2),
+                    properties=pika.BasicProperties(
+                        delivery_mode=2,  # Persistent
+                        timestamp=int(time.time())
+                    )
+                )
+                
+                print(f"📤 RabbitMQ Message Sent Successfully")
+                self.logger.info(f"RabbitMQ: {message['object_code']} at {message['location_code']}")
+                return True
+            else:
+                print("📋 LOCAL MODE - Message logged:")
+                print(json.dumps(message, indent=2))
+                self.logger.info(f"LOCAL: {message['object_code']} at {message['location_code']}")
+                return False
+                
         except Exception as e:
-            self.logger.error(f"Error closing RabbitMQ connection: {str(e)}")
-    
-    def __enter__(self):
-        """Context manager entry."""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - ensures connection is closed."""
-        self.close_connection()
-    
+            print(f"❌ Message sending failed: {e}")
+            print("📋 Logging message locally:")
+            print(json.dumps(message, indent=2))
+            self.logger.error(f"Message send failed: {e}")
+            return False
+
     def transmit_message(self, message_data: Dict) -> Dict:
         """
-        Transmit a message containing all key-value pairs from the dictionary to RabbitMQ.
+        Transmit message using send_rabbitmq_message method
         
         Args:
-            message_data (Dict): Dictionary containing message data with any number of key-value pairs
-        
-        Returns:
-            Dict: Dictionary containing the transmitted message with timestamp and metadata
+            message_data: Message dictionary to send
             
-        Raises:
-            ValueError: If message_data is empty or not a dictionary
+        Returns:
+            The transmitted message
         """
         try:
-            # Validate input
-            if not isinstance(message_data, dict):
-                raise ValueError("message_data must be a dictionary")
+            # Validate message format
+            required_fields = ['object_code', 'location_code', 'timestamp', 'scanner_id']
+            for field in required_fields:
+                if field not in message_data:
+                    raise ValueError(f"Missing required field: {field}")
             
-            if not message_data:
-                raise ValueError("message_data cannot be empty")
-            
-            # Create a copy of the original data to avoid modifying the input
-            composed_message = message_data.copy()
+            # Send the message
+            success = self.send_rabbitmq_message(message_data)
             
             # Add transmission metadata
-            composed_message['_timestamp'] = datetime.now().isoformat()
-            composed_message['_message_id'] = f"msg_{int(datetime.now().timestamp() * 1000)}"
-            composed_message['_total_fields'] = len(message_data)
+            message_data['_transmission_success'] = success
+            message_data['_transmission_method'] = 'rabbitmq' if success else 'local_log'
             
-            # Create summary of all key-value pairs for logging
-            field_summary = []
-            for key, value in message_data.items():
-                # Convert all values to strings for consistent handling
-                str_value = str(value)
-                field_summary.append(f"{key}: '{str_value[:50]}{'...' if len(str_value) > 50 else ''}'")
-            
-            # Log the transmission with field summary
-            self.logger.info(f"Message composed with {len(message_data)} fields: {', '.join(field_summary[:5])}")
-            if len(field_summary) > 5:
-                self.logger.info(f"... and {len(field_summary) - 5} more fields")
-            
-            # Transmit to RabbitMQ
-            success = self._publish_to_rabbitmq(composed_message)
-            
-            if success:
-                self.logger.info(f"Message successfully transmitted to RabbitMQ (ID: {composed_message['_message_id']})")
-            else:
-                self.logger.error("Failed to transmit message to RabbitMQ")
-                raise RuntimeError("Message transmission to RabbitMQ failed")
-            
-            return composed_message
+            return message_data
             
         except Exception as e:
-            self.logger.error(f"Failed to transmit message: {str(e)}")
+            self.logger.error(f"Failed to transmit message: {e}")
             raise
-    
-    def batch_transmit(self, messages: list[Dict]) -> list[Dict]:
-        """
-        Transmit multiple messages in batch to RabbitMQ.
+
+    def is_connected(self) -> bool:
+        """Check if RabbitMQ connection is active"""
+        if not self.rabbitmq_connection or self.rabbitmq_connection.is_closed:
+            return False
         
-        Args:
-            messages (list[Dict]): List of message dictionaries with any number of key-value pairs
-        
-        Returns:
-            list[Dict]: List of transmitted messages
-        """
-        transmitted_messages = []
-        
-        self.logger.info(f"Starting batch transmission of {len(messages)} messages")
-        
-        for i, message_data in enumerate(messages):
-            try:
-                transmitted_msg = self.transmit_message(message_data)
-                transmitted_messages.append(transmitted_msg)
-            except Exception as e:
-                self.logger.error(f"Failed to transmit message {i+1}: {str(e)}")
-                continue
-        
-        self.logger.info(f"Batch transmission completed. {len(transmitted_messages)}/{len(messages)} messages sent successfully to RabbitMQ")
-        return transmitted_messages
+        try:
+            self.rabbitmq_connection.process_data_events(time_limit=0)
+            return True
+        except Exception:
+            return False
+
+    def cleanup(self):
+        """Clean up RabbitMQ connection"""
+        try:
+            if self.rabbitmq_connection and not self.rabbitmq_connection.is_closed:
+                self.rabbitmq_connection.close()
+                self.logger.info("RabbitMQ connection closed")
+        except Exception as e:
+            self.logger.error(f"Error closing RabbitMQ connection: {e}")
 
 
 # Example usage
