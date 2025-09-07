@@ -10,13 +10,15 @@ import time
 import os
 from typing import Dict, Optional, Tuple, Any
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
+import threading
 
 try:
     from mfrc522 import SimpleMFRC522
     import RPi.GPIO as GPIO
     from gpiozero import RGBLED
-    from colorzero import Color
+    from colorzero import Color as Colour
 except ImportError as e:
     print(f"Warning: Required library not found: {e}")
     print("Please install with: pip install mfrc522 gpiozero colorzero")
@@ -24,9 +26,9 @@ except ImportError as e:
     SimpleMFRC522 = None
     GPIO = None
     RGBLED = None
-    Color = None
+    Colour = None
 
-from rabbitmq_tx import MessageTransmitter
+from rabbitmq_etx import EnhancedMessageTransmitter
 from enhanced_config_manager import EnhancedConfigManager
 
 
@@ -56,8 +58,22 @@ class RFIDScanner:
             timing_config: Timing configuration object
             test_mode: Enable test/simulation mode
         """
-        self.reader = SimpleMFRC522() if SimpleMFRC522 and not test_mode else None
-        self.led = RGBLED(*led_pins) if RGBLED else None
+        try:
+            from mfrc522 import SimpleMFRC522
+            import RPi.GPIO as GPIO
+            from gpiozero import RGBLED
+            from colorzero import Color
+            
+            self.reader = SimpleMFRC522() if not test_mode else None
+            self.led = RGBLED(*led_pins)
+            self.Color = Color
+            GPIO.setwarnings(False)
+        except ImportError:
+            print("Hardware libraries not available - running in simulation mode")
+            self.reader = None
+            self.led = None
+            self.Color = None
+            
         self.led_active = False
         self.timing_config = timing_config
         self.test_mode = test_mode
@@ -78,7 +94,7 @@ class RFIDScanner:
             flash: Whether to flash the LED
             duration: Duration to show color (None for indefinite, uses config default for green)
         """
-        if not self.led or not Color:
+        if not self.led or not self.Color:
             return
             
         # Use config default for green flash duration if not specified
@@ -86,24 +102,24 @@ class RFIDScanner:
             duration = self.timing_config.green_flash_duration
             
         color_map = {
-            'white': Color('white'),
-            'yellow': Color('yellow'), 
-            'blue': Color('blue'),
-            'green': Color('green'),
-            'purple': Color('purple'),
-            'red': Color('red'),
-            'orange': Color('orange'),
-            'off': Color('black')
+            'white': self.Color('white'),
+            'yellow': self.Color('yellow'), 
+            'blue': self.Color('blue'),
+            'green': self.Color('green'),
+            'purple': self.Color('purple'),
+            'red': self.Color('red'),
+            'orange': self.Color('orange'),
+            'off': self.Color('black')
         }
         
-        led_color = color_map.get(color.lower(), Color('white'))
+        led_color = color_map.get(color.lower(), self.Color('white'))
         
         if flash:
             # Flash the LED 3 times
             for _ in range(3):
                 self.led.color = led_color
                 time.sleep(0.2)
-                self.led.color = Color('black')
+                self.led.color = self.Color('black')
                 time.sleep(0.2)
             if duration:
                 time.sleep(duration)
@@ -111,7 +127,7 @@ class RFIDScanner:
             self.led.color = led_color
             if duration:
                 time.sleep(duration)
-                self.led.color = Color('black')  # Turn off after duration
+                self.led.color = self.Color('black')  # Turn off after duration
 
     def start_continuous_flash(self, color: str, interval: float = 1.0):
         """
@@ -121,21 +137,19 @@ class RFIDScanner:
             color: Color to flash
             interval: Flash interval in seconds
         """
-        import threading
-        
         self.stop_continuous_flash()  # Stop any existing flash
         
         def flash_led():
-            color_obj = Color(color.lower()) if Color else None
-            if not color_obj or not self.led:
+            if not self.Color or not self.led:
                 return
                 
+            color_obj = self.Color(color.lower())
             while not self._stop_flashing:
                 self.led.color = color_obj
                 time.sleep(interval / 2)
                 if self._stop_flashing:
                     break
-                self.led.color = Color('black')
+                self.led.color = self.Color('black')
                 time.sleep(interval / 2)
         
         self._stop_flashing = False
@@ -167,7 +181,7 @@ class RFIDScanner:
                 self.set_led_color('white')
             else:
                 # RabbitMQ unavailable - flashing orange
-                flash_interval = self.timing_config.orange_flash_interval if self.timing_config else 1.0
+                flash_interval = getattr(self.timing_config, 'orange_flash_interval', 1.0)
                 self.start_continuous_flash('orange', flash_interval)
             
             logging.info("Hold a tag near the reader...")
@@ -193,7 +207,7 @@ class RFIDScanner:
         if self.rabbitmq_connected:
             self.set_led_color('white')
         else:
-            flash_interval = self.timing_config.orange_flash_interval if self.timing_config else 1.0
+            flash_interval = getattr(self.timing_config, 'orange_flash_interval', 1.0)
             self.start_continuous_flash('orange', flash_interval)
         
         # Use configured read interval if available
@@ -218,93 +232,11 @@ class RFIDScanner:
         self.stop_continuous_flash()
         if self.led:
             self.led.close()
-        if GPIO:
-            GPIO.cleanup()_config:
-            duration = self.timing_config.green_flash_duration
-            
-        color_map = {
-            'white': Color('white'),
-            'yellow': Color('yellow'), 
-            'blue': Color('blue'),
-            'green': Color('green'),
-            'purple': Color('purple'),
-            'red': Color('red'),
-            'off': Color('black')
-        }
-        
-        led_color = color_map.get(color.lower(), Color('white'))
-        
-        if flash:
-            # Flash the LED 3 times
-            for _ in range(3):
-                self.led.color = led_color
-                time.sleep(0.2)
-                self.led.color = Color('black')
-                time.sleep(0.2)
-            if duration:
-                time.sleep(duration)
-        else:
-            self.led.color = led_color
-            if duration:
-                time.sleep(duration)
-                self.led.color = Color('black')  # Turn off after duration
-
-    def read_tag(self) -> Optional[Tuple[int, str]]:
-        """
-        Read an RFID tag with LED status indication
-
-        Returns:
-            Tuple of (id, text) if successful, None otherwise
-        """
-        if not self.reader:
-            # Simulation mode for testing
-            return self._simulate_tag_read()
-
         try:
-            # Show white LED while waiting for tag
-            self.set_led_color('white')
-            logging.info("Hold a tag near the reader...")
-            
-            tag_id, text = self.reader.read()
-            
-            # Turn off LED after successful read
-            self.set_led_color('off')
-            
-            return tag_id, text.strip()
-        except Exception as e:
-            logging.error(f"Error reading RFID tag: {e}")
-            self.set_led_color('off')
-            return None
-
-    def _simulate_tag_read(self) -> Optional[Tuple[int, str]]:
-        """Simulate tag reading for testing purposes"""
-        import random
-        
-        # Show white LED while simulating
-        self.set_led_color('white')
-        
-        # Use configured read interval if available
-        delay = self.timing_config.read_interval if self.timing_config else 2
-        time.sleep(delay)
-        
-        # Turn off LED
-        self.set_led_color('off')
-        
-        # Return simulated data
-        sample_objects = ["RFID1", "RFID2", "RFID3"]
-        sample_locations = ["OP1", "OP2", "OP3"]
-
-        if random.choice([True, False]):
-            return random.randint(1000, 9999), random.choice(sample_objects)
-        else:
-            return random.randint(1000, 9999), random.choice(sample_locations)
-
-    def cleanup(self):
-        """Clean up GPIO resources"""
-        if self.led:
-            self.led.close()
-        if GPIO:
+            import RPi.GPIO as GPIO
             GPIO.cleanup()
+        except ImportError:
+            pass
 
 
 class RFIDRabbitMQScanner:
@@ -348,17 +280,19 @@ class RFIDRabbitMQScanner:
         # Get RabbitMQ configuration and initialize transmitter
         rabbitmq_config = self.config_manager.get_rabbitmq_config()
         
-        # Initialize MessageTransmitter with status callback
-        self.message_transmitter = MessageTransmitter(
+        # Initialize EnhancedMessageTransmitter with status callback
+        self.message_transmitter = EnhancedMessageTransmitter(
             status_callback=self._rabbitmq_status_callback,
-            config=self.config_manager,
             **rabbitmq_config
         )
 
+        # Add a method to make it tx_message.py compatible
+        self.message_transmitter.send_rabbitmq_message = self._create_tx_compatible_sender()
+
         # Track scanned items
         self.scanned_items = []
-        self.object_item = None
-        self.location_item = None
+        self.object_item = ScannedItem("Nothing", ItemType.OBJECT, {"name": "Nothing"})
+        self.location_item = ScannedItem("Nowhere", ItemType.LOCATION, {"name": "Nowhere"})
         self.test_mode = test_mode
 
         # Update service start statistics
@@ -375,6 +309,67 @@ class RFIDRabbitMQScanner:
             connected: True if RabbitMQ is connected, False otherwise
         """
         self.rfid_scanner.set_rabbitmq_status(connected)
+
+    def _create_tx_compatible_sender(self):
+        """
+        Create a tx_message.py compatible sender method for the EnhancedMessageTransmitter
+        
+        Returns:
+            Function that mimics send_rabbitmq_message from tx_message.py
+        """
+        def send_rabbitmq_message(message):
+            """
+            Send message to RabbitMQ or log locally (tx_message.py compatible format)
+            This wraps the EnhancedMessageTransmitter's transmit_message method
+            
+            Args:
+                message: Message dictionary to send
+                
+            Returns:
+                bool: True if sent via RabbitMQ, False if logged locally/queued
+            """
+            try:
+                # Use the enhanced transmitter's method
+                result = self.message_transmitter.transmit_message(message)
+                
+                # Check transmission method from the result
+                transmission_method = result.get('_transmission_method', 'fallback_file')
+                
+                if transmission_method == 'rabbitmq':
+                    print(f"📤 RabbitMQ Message Sent Successfully")
+                    self.logger.info(f"RabbitMQ: {message.get('object_code', 'unknown')} at {message.get('location_code', 'unknown')}")
+                    return True
+                else:
+                    print("📋 FALLBACK MODE - Message queued for later transmission:")
+                    print(json.dumps(message, indent=2))
+                    self.logger.info(f"FALLBACK: {message.get('object_code', 'unknown')} at {message.get('location_code', 'unknown')}")
+                    
+                    # Show fallback queue size
+                    fallback_count = self.message_transmitter.get_fallback_message_count()
+                    if fallback_count > 0:
+                        print(f"📊 Fallback queue size: {fallback_count} messages")
+                    
+                    return False
+                    
+            except Exception as e:
+                print(f"❌ Message sending failed: {e}")
+                print("📋 Message processing error:")
+                print(json.dumps(message, indent=2))
+                self.logger.error(f"Message send failed: {e}")
+                return False
+        
+        return send_rabbitmq_message
+
+    def get_device_id(self):
+        """Get device identifier (same as tx_message.py)"""
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                for line in f:
+                    if line.startswith('Serial'):
+                        return line.split(':')[1].strip()
+            return 'unknown_bookworm'
+        except:
+            return 'unknown_bookworm'
 
     def _determine_item_type(self, item_id: str) -> Optional[ItemType]:
         """
@@ -423,17 +418,6 @@ class RFIDRabbitMQScanner:
             data=item_data
         )
 
-    def get_device_id(self):
-        """Get device identifier (same as tx_message.py)"""
-        try:
-            with open('/proc/cpuinfo', 'r') as f:
-                for line in f:
-                    if line.startswith('Serial'):
-                        return line.split(':')[1].strip()
-            return 'unknown_bookworm'
-        except:
-            return 'unknown_bookworm'
-
     def _create_message(self, object_item: ScannedItem, location_item: ScannedItem) -> Dict[str, Any]:
         """
         Create message content for RabbitMQ matching tx_message.py format
@@ -447,7 +431,7 @@ class RFIDRabbitMQScanner:
         """
         message = {
             'timestamp': datetime.now().isoformat(),
-            'scanner_id': f"rf-pi_{self.get_device_id()}",
+            'scanner_id': f"bookworm_pi_{self.get_device_id()}",
             'object_code': object_item.item_id,
             'object_info': object_item.data,
             'location_code': location_item.item_id,
@@ -461,8 +445,8 @@ class RFIDRabbitMQScanner:
 
     def _reset_scan_state(self):
         """Reset the scanning state"""
-        self.object_item = None
-        self.location_item = None
+        self.object_item = ScannedItem("Nothing", ItemType.OBJECT, {"name": "Nothing"})
+        self.location_item = ScannedItem("Nowhere", ItemType.LOCATION, {"name": "Nowhere"})
         self.scanned_items = []
 
     def _process_scanned_item(self, scanned_item: ScannedItem) -> bool:
@@ -507,7 +491,7 @@ class RFIDRabbitMQScanner:
 
     def run_once(self) -> bool:
         """
-        Run one scan cycle
+        Run one scan cycle with updated message format
 
         Returns:
             True if message was sent, False otherwise
@@ -540,9 +524,9 @@ class RFIDRabbitMQScanner:
                     total_tags=self.config_manager.statistics.total_tags + 1
                 )
 
-                # Create and send message
+                # Create and send message with new format
                 message = self._create_message(self.object_item, self.location_item)
-                self.message_transmitter.transmit_message(message)
+                self.message_transmitter.send_rabbitmq_message(message)
 
                 # Show solid purple for 2 seconds after successful transmission
                 self.rfid_scanner.set_led_color('purple', duration=2.0)
@@ -650,6 +634,31 @@ class RFIDRabbitMQScanner:
             "locations_count": len(self.config_manager.get_all_items("locations"))
         }
 
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Get current scanner status including RabbitMQ and fallback info
+        
+        Returns:
+            Dictionary with status information
+        """
+        transmitter_status = self.message_transmitter.get_status()
+        scanner_stats = self.get_statistics()
+        
+        return {
+            "test_mode": self.test_mode,
+            "config_file": self.config_manager.config_file,
+            "rabbitmq_connected": transmitter_status["connected"],
+            "rabbitmq_host": transmitter_status["rabbitmq_host"],
+            "rabbitmq_port": transmitter_status["rabbitmq_port"],
+            "queue_name": transmitter_status["queue_name"],
+            "fallback_messages": transmitter_status["fallback_messages"],
+            "objects_count": scanner_stats["objects_count"],
+            "locations_count": scanner_stats["locations_count"],
+            "total_tags": scanner_stats["total_tags"],
+            "service_starts": scanner_stats["service_starts"],
+            "last_scan": scanner_stats["last_scan"]
+        }
+
     def list_items(self, item_type: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
         """
         List all items of specified type
@@ -665,8 +674,7 @@ class RFIDRabbitMQScanner:
     def cleanup(self):
         """Clean up resources"""
         self.rfid_scanner.cleanup()
-        if hasattr(self.message_transmitter, 'cleanup'):
-            self.message_transmitter.cleanup()
+        self.message_transmitter.close_connection()
         self.logger.info("Scanner cleanup completed")
 
 
@@ -757,4 +765,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())
