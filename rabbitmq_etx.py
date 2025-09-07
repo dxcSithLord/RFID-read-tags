@@ -4,16 +4,25 @@ import pika
 import os
 import ssl
 from datetime import datetime
-from typing import Dict, Optional, Callable
+from typing import Dict, Optional, Callable, Tuple, Any
 from pathlib import Path
 import threading
 import time
+"""
+Updated RFID Scanner with tx_message.py compatible message format
+Complete self-contained version with EnhancedMessageTransmitter
+"""
+
+from dataclasses import dataclass
+from enum import Enum
+
+from enhanced_config_manager import EnhancedConfigManager
 
 
 class EnhancedMessageTransmitter:
     """
-    Enhanced message transmitter with RabbitMQ fallback to file storage
-    when RabbitMQ service is unavailable
+    Complete Enhanced message transmitter with RabbitMQ fallback to file storage
+    Drop-in replacement for rabbitmq_etx.py version
     """
     
     def __init__(self, log_file: Optional[str] = None, log_level: int = logging.INFO,
@@ -23,26 +32,9 @@ class EnhancedMessageTransmitter:
                  username: Optional[str] = None, password: Optional[str] = None,
                  use_ssl: bool = False, fallback_file_dir: str = "rabbitmq_fallback",
                  connection_timeout: float = 5.0, retry_interval: float = 30.0,
-                 status_callback: Optional[Callable[[bool], None]] = None):
+                 status_callback: Optional[Callable[[bool], None]] = None, **kwargs):
         """
         Initialize the Enhanced MessageTransmitter with fallback capabilities.
-        
-        Args:
-            log_file (str, optional): Path to log file. If None, logs to console.
-            log_level (int): Logging level (default: INFO)
-            rabbitmq_host (str): RabbitMQ host address (default: 'localhost')
-            rabbitmq_port (int): RabbitMQ port (default: 5672)
-            rabbitmq_vhost (str): RabbitMQ virtual host (default: '/')
-            queue_name (str): RabbitMQ queue name (default: 'messages')
-            exchange_name (str): RabbitMQ exchange name (default: '' for default exchange)
-            routing_key (str): Routing key for messages (default: '' uses queue_name)
-            username (str, optional): Username for authentication
-            password (str, optional): Password for authentication
-            use_ssl (bool): Whether to use SSL/TLS connection (default: False)
-            fallback_file_dir (str): Directory for fallback message files
-            connection_timeout (float): Timeout for connection attempts
-            retry_interval (float): Interval between connection retry attempts
-            status_callback (callable): Callback function called when connection status changes
         """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(log_level)
@@ -82,8 +74,8 @@ class EnhancedMessageTransmitter:
         self.password = password or os.getenv('RABBITMQ_PASSWORD')
         
         # Connection objects and status
-        self.connection = None
-        self.channel = None
+        #self.connection = None
+        #self.channel = None
         self.connected = False
         self.status_callback = status_callback
         
@@ -106,7 +98,7 @@ class EnhancedMessageTransmitter:
         """Attempt to establish connection to RabbitMQ."""
         try:
             # Create connection parameters
-            credentials = None
+            credentials = pika.PlainCredentials('guest', 'guest')   # Default credentials
             if self.username and self.password:
                 credentials = pika.PlainCredentials(self.username, self.password)
                 self.logger.debug(f"Using credentials for user: {self.username}")
@@ -184,12 +176,7 @@ class EnhancedMessageTransmitter:
         self.logger.debug("Connection monitoring started")
     
     def is_connected(self) -> bool:
-        """
-        Check if RabbitMQ connection is active.
-        
-        Returns:
-            bool: True if connected, False otherwise
-        """
+        """Check if RabbitMQ connection is active."""
         if not self.connection or self.connection.is_closed:
             self.connected = False
             return False
@@ -203,37 +190,33 @@ class EnhancedMessageTransmitter:
             return False
     
     def _publish_to_rabbitmq(self, message: Dict) -> bool:
-        """
-        Publish message to RabbitMQ queue.
-        
-        Args:
-            message (Dict): Message to publish
-            
-        Returns:
-            bool: True if published successfully, False otherwise
-        """
+        """Publish message to RabbitMQ queue."""
         try:
             # Check connection status
-            if not self.is_connected():
-                return False
-            
-            # Convert message to JSON string
-            message_body = json.dumps(message, indent=2, default=str)
-            
-            # Publish message
-            self.channel.basic_publish(
-                exchange=self.exchange_name,
-                routing_key=self.routing_key,
-                body=message_body,
-                properties=pika.BasicProperties(
-                    delivery_mode=2,  # Make message persistent
-                    content_type='application/json',
-                    timestamp=int(datetime.now().timestamp())
+            if self.is_connected():
+                # Convert message to JSON string
+                message_body = json.dumps(message, indent=2, default=str)
+                
+                # Publish message
+                self.channel.basic_publish(
+                    exchange=self.exchange_name,
+                    routing_key=self.routing_key,
+                    body=message_body,
+                    properties=pika.BasicProperties(
+                        delivery_mode=2,  # Make message persistent
+                        content_type='application/json',
+                        timestamp=int(datetime.now().timestamp())
+                    )
                 )
-            )
-            
-            self.logger.info(f"Message published to RabbitMQ queue '{self.queue_name}'")
-            return True
+                
+                self.logger.info(f"Message published to RabbitMQ queue '{self.queue_name}'")
+                return True
+            else:
+                self.logger.warning("Cannot publish message - RabbitMQ connection is not available")
+                self.connected = False
+                if self.status_callback:
+                    self.status_callback(False)
+                return False           
             
         except Exception as e:
             self.logger.error(f"Failed to publish message to RabbitMQ: {str(e)}")
@@ -243,15 +226,7 @@ class EnhancedMessageTransmitter:
             return False
     
     def _save_to_fallback_file(self, message: Dict) -> bool:
-        """
-        Save message to fallback file when RabbitMQ is unavailable.
-        
-        Args:
-            message (Dict): Message to save
-            
-        Returns:
-            bool: True if saved successfully, False otherwise
-        """
+        """Save message to fallback file when RabbitMQ is unavailable."""
         try:
             # Load existing messages
             messages = []
@@ -327,12 +302,7 @@ class EnhancedMessageTransmitter:
             self.logger.error(f"Error processing fallback messages: {str(e)}")
     
     def get_fallback_message_count(self) -> int:
-        """
-        Get the number of messages in the fallback file.
-        
-        Returns:
-            int: Number of queued fallback messages
-        """
+        """Get the number of messages in the fallback file."""
         try:
             if self.fallback_file_path.exists():
                 with open(self.fallback_file_path, 'r') as f:
@@ -343,15 +313,7 @@ class EnhancedMessageTransmitter:
         return 0
     
     def transmit_message(self, message_data: Dict) -> Dict:
-        """
-        Transmit a message with automatic fallback to file storage.
-        
-        Args:
-            message_data (Dict): Dictionary containing message data
-        
-        Returns:
-            Dict: Dictionary containing the transmitted message with metadata
-        """
+        """Transmit a message with automatic fallback to file storage."""
         try:
             # Validate input
             if not isinstance(message_data, dict):
@@ -387,15 +349,6 @@ class EnhancedMessageTransmitter:
             composed_message['_transmission_method'] = transmission_method
             composed_message['_fallback_queue_size'] = self.get_fallback_message_count()
             
-            # Log the transmission
-            field_summary = []
-            for key, value in message_data.items():
-                str_value = str(value)
-                field_summary.append(f"{key}: '{str_value[:50]}{'...' if len(str_value) > 50 else ''}'")
-            
-            self.logger.info(f"Message transmitted via {transmission_method} with {len(message_data)} fields")
-            self.logger.debug(f"Fields: {', '.join(field_summary[:5])}")
-            
             return composed_message
             
         except Exception as e:
@@ -403,12 +356,7 @@ class EnhancedMessageTransmitter:
             raise
     
     def get_status(self) -> Dict:
-        """
-        Get current transmitter status.
-        
-        Returns:
-            Dict: Status information
-        """
+        """Get current transmitter status."""
         return {
             "connected": self.is_connected(),
             "rabbitmq_host": self.rabbitmq_host,
@@ -456,7 +404,8 @@ if __name__ == "__main__":
     
     print("Enhanced Message Transmitter with Fallback Demo")
     print("=" * 50)
-    
+
+    transmitter = None
     # Example with callback for status monitoring
     try:
         transmitter = EnhancedMessageTransmitter(
@@ -500,6 +449,7 @@ if __name__ == "__main__":
         print(f"Demo error: {e}")
     finally:
         if 'transmitter' in locals():
-            transmitter.close_connection()
-    
+            if transmitter is not None:
+                transmitter.close_connection()
+
     print("\nDemo completed!")
