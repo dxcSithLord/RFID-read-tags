@@ -52,6 +52,7 @@ class TimingConfig:
     """Configuration for timing parameters"""
     read_interval: float = 2.0
     green_flash_duration: float = 2.0
+    orange_flash_interval: float = 2.0
 
 
 @dataclass
@@ -195,30 +196,30 @@ class EnhancedConfigManager:
         """Apply environment variable overrides"""
         # RabbitMQ overrides
         if os.getenv('RABBITMQ_HOST'):
-            self.rabbitmq.host = os.getenv('RABBITMQ_HOST')
+            self.rabbitmq.host = os.getenv('RABBITMQ_HOST') or self.rabbitmq.host
         if os.getenv('RABBITMQ_PORT'):
             try:
-                self.rabbitmq.port = int(os.getenv('RABBITMQ_PORT'))
+                self.rabbitmq.port = int(os.getenv('RABBITMQ_PORT') or self.rabbitmq.port)
             except ValueError:
                 self.logger.warning("Invalid RABBITMQ_PORT environment variable")
         if os.getenv('RABBITMQ_USE_SSL'):
-            self.rabbitmq.use_ssl = os.getenv('RABBITMQ_USE_SSL').lower() == 'true'
+            self.rabbitmq.use_ssl = bool(os.getenv('RABBITMQ_USE_SSL')) or self.rabbitmq.use_ssl
         if os.getenv('RABBITMQ_USERNAME'):
-            self.rabbitmq.username = os.getenv('RABBITMQ_USERNAME')
+            self.rabbitmq.username = os.getenv('RABBITMQ_USERNAME') or self.rabbitmq.username
         if os.getenv('RABBITMQ_PASSWORD'):
-            self.rabbitmq.password = os.getenv('RABBITMQ_PASSWORD')
+            self.rabbitmq.password = os.getenv('RABBITMQ_PASSWORD') or self.rabbitmq.password
         if os.getenv('RABBITMQ_VHOST'):
-            self.rabbitmq.virtual_host = os.getenv('RABBITMQ_VHOST')
+            self.rabbitmq.virtual_host = os.getenv('RABBITMQ_VHOST') or self.rabbitmq.virtual_host
         if os.getenv('RABBITMQ_EXCHANGE'):
-            self.rabbitmq.exchange = os.getenv('RABBITMQ_EXCHANGE')
+            self.rabbitmq.exchange = os.getenv('RABBITMQ_EXCHANGE') or self.rabbitmq.exchange
         if os.getenv('RABBITMQ_QUEUE'):
-            self.rabbitmq.queue_name = os.getenv('RABBITMQ_QUEUE')
+            self.rabbitmq.queue_name = os.getenv('RABBITMQ_QUEUE') or self.rabbitmq.queue_name
 
         # Logging overrides
         if os.getenv('LOG_LEVEL'):
-            self.logging_config.level = os.getenv('LOG_LEVEL')
+            self.logging_config.level = os.getenv('LOG_LEVEL') or self.logging_config.level
         if os.getenv('LOG_FILE'):
-            self.logging_config.file = os.getenv('LOG_FILE')
+            self.logging_config.file = os.getenv('LOG_FILE') or self.logging_config.file
 
         self.logger.debug("Environment variable overrides applied")
 
