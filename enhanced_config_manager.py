@@ -168,7 +168,8 @@ class EnhancedConfigManager:
             timing_data = config_data["timing"]
             self.timing = TimingConfig(
                 read_interval=timing_data.get("read_interval", self.timing.read_interval),
-                green_flash_duration=timing_data.get("green_flash_duration", self.timing.green_flash_duration)
+                green_flash_duration=timing_data.get("green_flash_duration", self.timing.green_flash_duration),
+                orange_flash_interval=timing_data.get("orange_flash_interval", self.timing.orange_flash_interval)
             )
 
         # Parse statistics
