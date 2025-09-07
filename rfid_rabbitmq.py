@@ -60,7 +60,7 @@ class RFIDScanner:
         self.led_active = False
         self.timing_config = timing_config
         
-    def set_led_color(self, color: str, flash: bool = False, duration: float = None):
+    def set_led_color(self, color: str, flash: bool = False, duration: float = 1.0):
         """
         Set LED color with optional flashing
         
@@ -203,8 +203,8 @@ class RFIDRabbitMQScanner:
 
         # Track scanned items
         self.scanned_items = []
-        self.object_item = None
-        self.location_item = None
+        self.object_item = ScannedItem("Nothing", ItemType.OBJECT, {"name": "Nothing"})
+        self.location_item = ScannedItem("Nowhere", ItemType.LOCATION, {"name": "Nowhere"})
 
         # Update service start statistics
         self.config_manager.increment_service_starts()
@@ -297,8 +297,8 @@ class RFIDRabbitMQScanner:
 
     def _reset_scan_state(self):
         """Reset the scanning state"""
-        self.object_item = None
-        self.location_item = None
+        self.object_item = ScannedItem("Nothing", ItemType.OBJECT, {"name": "Nothing"})
+        self.location_item = ScannedItem("Nowhere", ItemType.LOCATION, {"name": "Nowhere"})
         self.scanned_items = []
 
     def _process_scanned_item(self, scanned_item: ScannedItem) -> bool:
