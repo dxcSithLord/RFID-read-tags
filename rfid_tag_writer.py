@@ -47,7 +47,7 @@ class RFIDTagWriter:
         if not self.reader:
             self.logger.warning("Running in simulation mode - no actual writing will occur")
 
-    def set_led_color(self, color: str, flash: bool = False, duration: float = None):
+    def set_led_color(self, color: str, flash: bool = False, duration: float = 1.0):
         """
         Set LED color with optional flashing
 
